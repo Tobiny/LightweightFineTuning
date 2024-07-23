@@ -9,14 +9,31 @@ def load_data(file_path):
 
 
 def preprocess_data(df):
-    # Convert categorical variables to numerical
+    # Convert binary categorical variables to numerical
+    binary_columns = ['PhysicalActivities', 'HadHeartAttack', 'HadAngina', 'HadStroke',
+                      'HadAsthma', 'HadSkinCancer', 'HadCOPD', 'HadDepressiveDisorder',
+                      'HadKidneyDisease', 'HadArthritis', 'DeafOrHardOfHearing',
+                      'BlindOrVisionDifficulty', 'DifficultyConcentrating', 'DifficultyWalking',
+                      'DifficultyDressingBathing', 'DifficultyErrands', 'ChestScan',
+                      'AlcoholDrinkers', 'HIVTesting', 'FluVaxLast12', 'PneumoVaxEver',
+                      'HighRiskLastYear']
+
+    for col in binary_columns:
+        df[col] = df[col].map({'Yes': 1, 'No': 0})
+
+    # Convert other categorical variables to numerical
+    categorical_columns = ['State', 'Sex', 'GeneralHealth', 'LastCheckupTime', 'RemovedTeeth',
+                           'HadDiabetes', 'SmokerStatus', 'ECigaretteUsage', 'RaceEthnicityCategory',
+                           'AgeCategory', 'TetanusLast10Tdap', 'CovidPos']
+
     le = LabelEncoder()
-    for column in df.select_dtypes(include=['object']).columns:
-        df[column] = le.fit_transform(df[column].astype(str))
+    for col in categorical_columns:
+        df[col] = le.fit_transform(df[col].astype(str))
 
     # Normalize numerical features
+    numerical_columns = ['PhysicalHealthDays', 'MentalHealthDays', 'SleepHours',
+                         'HeightInMeters', 'WeightInKilograms', 'BMI']
     scaler = StandardScaler()
-    numerical_columns = df.select_dtypes(include=['float64']).columns
     df[numerical_columns] = scaler.fit_transform(df[numerical_columns])
 
     # Separate features and target
@@ -51,6 +68,15 @@ if __name__ == "__main__":
 
     # Preprocess the data
     X, y = preprocess_data(df)
+
+    print("\nProcessed data information:")
+    print(X.info())
+    print("\nFirst few rows of processed data:")
+    print(X.head())
+
+    # Check class distribution
+    print("\nClass distribution:")
+    print(y.value_counts(normalize=True))
 
     # Split the data
     X_train, X_test, y_train, y_test = split_data(X, y)
