@@ -4,6 +4,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from imblearn.over_sampling import SMOTE
 
+
 def load_data(file_path):
     return pd.read_csv(file_path)
 
@@ -47,6 +48,12 @@ def split_data(X, y, test_size=0.2, random_state=42):
     return train_test_split(X, y, test_size=test_size, random_state=random_state, stratify=y)
 
 
+def handle_class_imbalance(X, y):
+    smote = SMOTE(random_state=42)
+    X_resampled, y_resampled = smote.fit_resample(X, y)
+    return X_resampled, y_resampled
+
+
 def create_text_representation(df):
     text_data = []
     for _, row in df.iterrows():
@@ -55,51 +62,3 @@ def create_text_representation(df):
             text += f"{col}: {value}, "
         text_data.append(text[:-2])  # Remove last comma and space
     return text_data
-
-
-def handle_class_imbalance(X, y):
-    smote = SMOTE(random_state=42)
-    X_resampled, y_resampled = smote.fit_resample(X, y)
-    return X_resampled, y_resampled
-
-
-
-if __name__ == "__main__":
-    # Load the data
-    df = load_data('../data/heart_2022_no_nans.csv')
-
-    print("Dataset information:")
-    print(df.info())
-    print("\nFirst few rows:")
-    print(df.head())
-
-    # Preprocess the data
-    X, y = preprocess_data(df)
-
-    print("\nProcessed data information:")
-    print(X.info())
-    print("\nFirst few rows of processed data:")
-    print(X.head())
-
-    # Check class distribution
-    print("\nClass distribution:")
-    print(y.value_counts(normalize=True))
-
-    # Split the data
-    X_train, X_test, y_train, y_test = split_data(X, y)
-
-    X_train_resampled, y_train_resampled = handle_class_imbalance(X_train, y_train)
-    print(f"\nResampled training set shape: {X_train_resampled.shape}")
-    print("Resampled class distribution:")
-    print(pd.Series(y_train_resampled).value_counts(normalize=True))
-
-    print(f"\nTraining set shape: {X_train.shape}")
-    print(f"Test set shape: {X_test.shape}")
-
-    # Create text representation
-    X_train_text = create_text_representation(X_train)
-    X_test_text = create_text_representation(X_test)
-
-    print("\nSample text representation:")
-    print(X_train_text[0])
-
