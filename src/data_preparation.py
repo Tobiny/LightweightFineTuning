@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder, StandardScaler
-
+from imblearn.over_sampling import SMOTE
 
 def load_data(file_path):
     return pd.read_csv(file_path)
@@ -57,6 +57,13 @@ def create_text_representation(df):
     return text_data
 
 
+def handle_class_imbalance(X, y):
+    smote = SMOTE(random_state=42)
+    X_resampled, y_resampled = smote.fit_resample(X, y)
+    return X_resampled, y_resampled
+
+
+
 if __name__ == "__main__":
     # Load the data
     df = load_data('../data/heart_2022_no_nans.csv')
@@ -81,6 +88,11 @@ if __name__ == "__main__":
     # Split the data
     X_train, X_test, y_train, y_test = split_data(X, y)
 
+    X_train_resampled, y_train_resampled = handle_class_imbalance(X_train, y_train)
+    print(f"\nResampled training set shape: {X_train_resampled.shape}")
+    print("Resampled class distribution:")
+    print(pd.Series(y_train_resampled).value_counts(normalize=True))
+
     print(f"\nTraining set shape: {X_train.shape}")
     print(f"Test set shape: {X_test.shape}")
 
@@ -90,3 +102,4 @@ if __name__ == "__main__":
 
     print("\nSample text representation:")
     print(X_train_text[0])
+
