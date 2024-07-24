@@ -4,9 +4,11 @@ from torch.utils.data import DataLoader, TensorDataset
 from transformers import AdamW, get_linear_schedule_with_warmup
 from sklearn.ensemble import GradientBoostingClassifier
 from data_preparation import load_data, preprocess_data, split_data, handle_class_imbalance, create_text_representation
-from model_utils import select_features, evaluate_model, load_bert_model, create_peft_model, get_lora_config
+from model_utils import select_features, evaluate_model, load_bert_model, create_peft_model, get_lora_config, \
+    plot_confusion_matrix
 from tqdm import tqdm
 import joblib
+
 
 def check_and_create_directory(path):
     if not os.path.exists(path):
@@ -15,33 +17,29 @@ def check_and_create_directory(path):
     else:
         print(f"Directory already exists: {path}")
 
-def train_gradient_boosting():
-    print("Loading and preprocessing data...")
-    df = load_data('../data/heart_2022_no_nans.csv')
-    X, y = preprocess_data(df)
-    X_train, X_test, y_train, y_test = split_data(X, y)
 
-    print("Handling class imbalance...")
-    X_train_resampled, y_train_resampled = handle_class_imbalance(X_train, y_train)
+def evaluate_bert(model, dataloader, device):
+    model.eval()
+    all_preds = []
+    all_labels = []
 
-    print("Selecting features...")
-    X_train_selected, selected_feature_indices = select_features(X_train_resampled, y_train_resampled)
-    X_test_selected = X_test.iloc[:, selected_feature_indices]
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc="Evaluating"):
+            batch = tuple(t.to(device) for t in batch)
+            inputs = {'input_ids': batch[0], 'attention_mask': batch[1]}
+            labels = batch[2]
 
-    print("Training Gradient Boosting model...")
-    model = GradientBoostingClassifier(random_state=42)
-    model.fit(X_train_selected, y_train_resampled)
+            outputs = model(**inputs)
+            logits = outputs.logits
+            preds = torch.argmax(logits, dim=1)
 
-    print("Evaluating Gradient Boosting model...")
-    y_pred = model.predict(X_test_selected)
-    y_pred_proba = model.predict_proba(X_test_selected)[:, 1]
-    metrics = evaluate_model(y_test, y_pred, y_pred_proba)
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
 
-    print("Gradient Boosting Model performance:")
-    for metric, value in metrics.items():
-        print(f"{metric}: {value:.4f}")
+    metrics, cm = evaluate_model(all_labels, all_preds)
+    plot_confusion_matrix(cm, ['No Heart Attack', 'Heart Attack'])
+    return metrics
 
-    return model, selected_feature_indices
 
 def train_bert_model(model, train_dataloader, val_dataloader, device, num_epochs=3):
     optimizer = AdamW(model.parameters(), lr=2e-5)
@@ -51,8 +49,7 @@ def train_bert_model(model, train_dataloader, val_dataloader, device, num_epochs
     for epoch in range(num_epochs):
         print(f"Training epoch {epoch + 1}/{num_epochs}...")
         model.train()
-        train_progress = tqdm(train_dataloader, desc="Training", leave=False)
-        for batch in train_progress:
+        for batch in tqdm(train_dataloader, desc="Training"):
             batch = tuple(t.to(device) for t in batch)
             inputs = {'input_ids': batch[0], 'attention_mask': batch[1], 'labels': batch[2]}
 
@@ -66,35 +63,18 @@ def train_bert_model(model, train_dataloader, val_dataloader, device, num_epochs
             optimizer.zero_grad()
 
         print(f"Evaluating after epoch {epoch + 1}...")
-        model.eval()
-        val_preds, val_true = [], []
-        val_progress = tqdm(val_dataloader, desc="Evaluating", leave=False)
-        for batch in val_progress:
-            batch = tuple(t.to(device) for t in batch)
-            inputs = {'input_ids': batch[0], 'attention_mask': batch[1]}
-
-            with torch.no_grad():
-                outputs = model(**inputs)
-
-            logits = outputs.logits
-            preds = torch.argmax(logits, dim=1).cpu().numpy()
-            val_preds.extend(preds)
-            val_true.extend(batch[2].cpu().numpy())
-
-        metrics = evaluate_model(val_true, val_preds)
+        metrics = evaluate_bert(model, val_dataloader, device)
 
         print(f"Epoch {epoch + 1}/{num_epochs} metrics:")
         for metric, value in metrics.items():
             print(f"{metric}: {value:.4f}")
 
+
 def main():
-    # Verificar y crear directorios necesarios
     check_and_create_directory('../saved_models')
+    check_and_create_directory('../outputs')
 
-    print("Training Gradient Boosting model:")
-    gb_model, selected_features = train_gradient_boosting()
-
-    print("\nPreparing data for BERT model:")
+    print("Loading and preprocessing data...")
     df = load_data('../data/heart_2022_no_nans.csv')
     X, y = preprocess_data(df)
     X_train, X_test, y_train, y_test = split_data(X, y)
@@ -130,6 +110,12 @@ def main():
     print(f"Using device: {device}")
     bert_model.to(device)
 
+    print("\nEvaluating base BERT model:")
+    base_metrics = evaluate_bert(bert_model, test_dataloader, device)
+    print("Base BERT model performance:")
+    for metric, value in base_metrics.items():
+        print(f"{metric}: {value:.4f}")
+
     print("\nTraining base BERT model:")
     train_bert_model(bert_model, train_dataloader, test_dataloader, device)
 
@@ -141,17 +127,10 @@ def main():
     train_bert_model(peft_model, train_dataloader, test_dataloader, device)
 
     # Save the models
-    gb_model_path = '../saved_models/gradient_boosting_model.joblib'
     bert_model_path = '../saved_models/bert_model'
     peft_model_path = '../saved_models/peft_model'
 
     print("Saving models...")
-    try:
-        joblib.dump(gb_model, gb_model_path)
-        print(f"Gradient Boosting model saved to {gb_model_path}")
-    except Exception as e:
-        print(f"Error saving Gradient Boosting model: {e}")
-
     try:
         bert_model.save_pretrained(bert_model_path)
         print(f"BERT model saved to {bert_model_path}")
@@ -165,6 +144,7 @@ def main():
         print(f"Error saving PEFT model: {e}")
 
     print("\nTraining and evaluation complete.")
+
 
 if __name__ == "__main__":
     main()
