@@ -1,21 +1,44 @@
 import os
+import sys
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 from transformers import AdamW, get_linear_schedule_with_warmup
-from sklearn.ensemble import GradientBoostingClassifier
-from data_preparation import load_data, preprocess_data, split_data, handle_class_imbalance, create_text_representation
+from data_preparation import load_data, preprocess_data, split_data, create_text_representation
 from model_utils import select_features, evaluate_model, load_bert_model, create_peft_model, get_lora_config, \
     plot_confusion_matrix
 from tqdm import tqdm
-import joblib
+import logging
+from datetime import datetime
+
+
+def setup_logging():
+    log_dir = '../logs'
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, f'training_log_{datetime.now().strftime("%Y%m%d_%H%M%S")}.txt')
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s [%(levelname)s] - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file, mode='w'),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+
+    if os.path.exists(log_file):
+        print(f"Log file created: {log_file}")
+    else:
+        print(f"Failed to create log file: {log_file}")
+
+    return logging.getLogger(__name__)
 
 
 def check_and_create_directory(path):
     if not os.path.exists(path):
         os.makedirs(path)
-        print(f"Created directory: {path}")
+        logging.info(f"Created directory: {path}")
     else:
-        print(f"Directory already exists: {path}")
+        logging.info(f"Directory already exists: {path}")
 
 
 def evaluate_bert(model, dataloader, device):
@@ -47,7 +70,7 @@ def train_bert_model(model, train_dataloader, val_dataloader, device, num_epochs
     scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=0, num_training_steps=total_steps)
 
     for epoch in range(num_epochs):
-        print(f"Training epoch {epoch + 1}/{num_epochs}...")
+        logging.info(f"Training epoch {epoch + 1}/{num_epochs}...")
         model.train()
         for batch in tqdm(train_dataloader, desc="Training"):
             batch = tuple(t.to(device) for t in batch)
@@ -62,35 +85,38 @@ def train_bert_model(model, train_dataloader, val_dataloader, device, num_epochs
             scheduler.step()
             optimizer.zero_grad()
 
-        print(f"Evaluating after epoch {epoch + 1}...")
+        logging.info(f"Evaluating after epoch {epoch + 1}...")
         metrics = evaluate_bert(model, val_dataloader, device)
 
-        print(f"Epoch {epoch + 1}/{num_epochs} metrics:")
+        logging.info(f"Epoch {epoch + 1}/{num_epochs} metrics:")
         for metric, value in metrics.items():
-            print(f"{metric}: {value:.4f}")
+            logging.info(f"{metric}: {value:.4f}")
 
 
 def main():
+    logger = setup_logging()
+    logger.info("Setup initialized.")
+
     check_and_create_directory('../saved_models')
     check_and_create_directory('../outputs')
 
-    print("Loading and preprocessing data...")
+    logging.info("Loading and preprocessing data...")
     df = load_data('../data/heart_2022_no_nans.csv')
     X, y = preprocess_data(df)
     X_train, X_test, y_train, y_test = split_data(X, y)
 
-    print("Creating text representations...")
+    logging.info("Creating text representations...")
     X_train_text = create_text_representation(X_train)
     X_test_text = create_text_representation(X_test)
 
-    print("Loading BERT model and tokenizer...")
+    logging.info("Loading BERT model and tokenizer...")
     tokenizer, bert_model = load_bert_model()
 
-    print("Tokenizing data...")
+    logging.info("Tokenizing data...")
     train_encodings = tokenizer(X_train_text, truncation=True, padding=True, max_length=512)
     test_encodings = tokenizer(X_test_text, truncation=True, padding=True, max_length=512)
 
-    print("Creating datasets...")
+    logging.info("Creating datasets...")
     train_dataset = TensorDataset(
         torch.tensor(train_encodings['input_ids']),
         torch.tensor(train_encodings['attention_mask']),
@@ -102,24 +128,24 @@ def main():
         torch.tensor(y_test.values)
     )
 
-    print("Creating dataloaders...")
+    logging.info("Creating dataloaders...")
     train_dataloader = DataLoader(train_dataset, batch_size=16, shuffle=True)
     test_dataloader = DataLoader(test_dataset, batch_size=16)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
+    logging.info(f"Using device: {device}")
     bert_model.to(device)
 
-    print("\nEvaluating base BERT model:")
+    logging.info("\nEvaluating base BERT model:")
     base_metrics = evaluate_bert(bert_model, test_dataloader, device)
-    print("Base BERT model performance:")
+    logging.info("Base BERT model performance:")
     for metric, value in base_metrics.items():
-        print(f"{metric}: {value:.4f}")
+        logging.info(f"{metric}: {value:.4f}")
 
-    print("\nTraining base BERT model:")
+    logging.info("\nTraining base BERT model:")
     train_bert_model(bert_model, train_dataloader, test_dataloader, device)
 
-    print("\nCreating and training PEFT model:")
+    logging.info("\nCreating and training PEFT model:")
     peft_config = get_lora_config()
     peft_model = create_peft_model(bert_model, peft_config)
     peft_model.to(device)
@@ -130,20 +156,20 @@ def main():
     bert_model_path = '../saved_models/bert_model'
     peft_model_path = '../saved_models/peft_model'
 
-    print("Saving models...")
+    logging.info("Saving models...")
     try:
         bert_model.save_pretrained(bert_model_path)
-        print(f"BERT model saved to {bert_model_path}")
+        logging.info(f"BERT model saved to {bert_model_path}")
     except Exception as e:
-        print(f"Error saving BERT model: {e}")
+        logging.error(f"Error saving BERT model: {e}")
 
     try:
         peft_model.save_pretrained(peft_model_path)
-        print(f"PEFT model saved to {peft_model_path}")
+        logging.info(f"PEFT model saved to {peft_model_path}")
     except Exception as e:
-        print(f"Error saving PEFT model: {e}")
+        logging.error(f"Error saving PEFT model: {e}")
 
-    print("\nTraining and evaluation complete.")
+    logging.info("\nTraining and evaluation complete.")
 
 
 if __name__ == "__main__":
