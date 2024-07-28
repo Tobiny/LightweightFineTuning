@@ -4,12 +4,12 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 from transformers import AdamW, get_linear_schedule_with_warmup
 from data_preparation import load_data, preprocess_data, split_data, create_text_representation
-from model_utils import select_features, evaluate_model, load_bert_model, create_peft_model, get_lora_config, \
-    plot_confusion_matrix
+from model_utils import select_features, evaluate_model, load_bert_model, create_peft_model, get_lora_config, plot_confusion_matrix
 from tqdm import tqdm
 import logging
 from datetime import datetime
-
+import numpy as np
+from sklearn.utils.class_weight import compute_class_weight
 
 def setup_logging():
     log_dir = '../logs'
@@ -32,14 +32,12 @@ def setup_logging():
 
     return logging.getLogger(__name__)
 
-
 def check_and_create_directory(path):
     if not os.path.exists(path):
         os.makedirs(path)
         logging.info(f"Created directory: {path}")
     else:
         logging.info(f"Directory already exists: {path}")
-
 
 def evaluate_bert(model, dataloader, device):
     model.eval()
@@ -63,27 +61,36 @@ def evaluate_bert(model, dataloader, device):
     plot_confusion_matrix(cm, ['No Heart Attack', 'Heart Attack'])
     return metrics
 
-
-def train_bert_model(model, train_dataloader, val_dataloader, device, num_epochs=3):
+def train_bert_model(model, train_dataloader, val_dataloader, device, class_weights, num_epochs=10):
     optimizer = AdamW(model.parameters(), lr=2e-5)
     total_steps = len(train_dataloader) * num_epochs
     scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=0, num_training_steps=total_steps)
 
+    best_f1 = 0
+    best_model = None
+
     for epoch in range(num_epochs):
         logging.info(f"Training epoch {epoch + 1}/{num_epochs}...")
         model.train()
+        total_loss = 0
         for batch in tqdm(train_dataloader, desc="Training"):
             batch = tuple(t.to(device) for t in batch)
             inputs = {'input_ids': batch[0], 'attention_mask': batch[1], 'labels': batch[2]}
 
             outputs = model(**inputs)
-            loss = outputs.loss
+            logits = outputs.logits
+            loss = torch.nn.functional.cross_entropy(logits, inputs['labels'], weight=class_weights.to(device))
+            total_loss += loss.item()
+
             loss.backward()
 
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             scheduler.step()
             optimizer.zero_grad()
+
+        avg_loss = total_loss / len(train_dataloader)
+        logging.info(f"Average loss for epoch {epoch + 1}: {avg_loss:.4f}")
 
         logging.info(f"Evaluating after epoch {epoch + 1}...")
         metrics = evaluate_bert(model, val_dataloader, device)
@@ -92,6 +99,11 @@ def train_bert_model(model, train_dataloader, val_dataloader, device, num_epochs
         for metric, value in metrics.items():
             logging.info(f"{metric}: {value:.4f}")
 
+        if metrics['f1_score'] > best_f1:
+            best_f1 = metrics['f1_score']
+            best_model = model.state_dict()
+
+    return best_model
 
 def main():
     logger = setup_logging()
@@ -104,6 +116,10 @@ def main():
     df = load_data('../data/heart_2022_no_nans.csv')
     X, y = preprocess_data(df)
     X_train, X_test, y_train, y_test = split_data(X, y)
+
+    # Compute class weights
+    class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
+    class_weights = torch.tensor(class_weights, dtype=torch.float)
 
     logging.info("Creating text representations...")
     X_train_text = create_text_representation(X_train)
@@ -143,14 +159,14 @@ def main():
         logging.info(f"{metric}: {value:.4f}")
 
     logging.info("\nTraining base BERT model:")
-    train_bert_model(bert_model, train_dataloader, test_dataloader, device)
+    best_bert_model = train_bert_model(bert_model, train_dataloader, test_dataloader, device, class_weights)
 
     logging.info("\nCreating and training PEFT model:")
     peft_config = get_lora_config()
     peft_model = create_peft_model(bert_model, peft_config)
     peft_model.to(device)
 
-    train_bert_model(peft_model, train_dataloader, test_dataloader, device)
+    best_peft_model = train_bert_model(peft_model, train_dataloader, test_dataloader, device, class_weights)
 
     # Save the models
     bert_model_path = '../saved_models/bert_model'
@@ -158,19 +174,18 @@ def main():
 
     logging.info("Saving models...")
     try:
-        bert_model.save_pretrained(bert_model_path)
+        torch.save(best_bert_model, bert_model_path)
         logging.info(f"BERT model saved to {bert_model_path}")
     except Exception as e:
         logging.error(f"Error saving BERT model: {e}")
 
     try:
-        peft_model.save_pretrained(peft_model_path)
+        torch.save(best_peft_model, peft_model_path)
         logging.info(f"PEFT model saved to {peft_model_path}")
     except Exception as e:
         logging.error(f"Error saving PEFT model: {e}")
 
     logging.info("\nTraining and evaluation complete.")
-
 
 if __name__ == "__main__":
     main()
