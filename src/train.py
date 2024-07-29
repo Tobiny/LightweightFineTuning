@@ -61,13 +61,15 @@ def evaluate_bert(model, dataloader, device):
     plot_confusion_matrix(cm, ['No Heart Attack', 'Heart Attack'])
     return metrics
 
-def train_bert_model(model, train_dataloader, val_dataloader, device, class_weights, num_epochs=10):
+def train_bert_model(model, train_dataloader, val_dataloader, device, class_weights, num_epochs=3):
     optimizer = AdamW(model.parameters(), lr=2e-5)
     total_steps = len(train_dataloader) * num_epochs
     scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=0, num_training_steps=total_steps)
 
     best_f1 = 0
     best_model = None
+    patience = 2
+    no_improve = 0
 
     for epoch in range(num_epochs):
         logging.info(f"Training epoch {epoch + 1}/{num_epochs}...")
@@ -102,8 +104,28 @@ def train_bert_model(model, train_dataloader, val_dataloader, device, class_weig
         if metrics['f1_score'] > best_f1:
             best_f1 = metrics['f1_score']
             best_model = model.state_dict()
+            no_improve = 0
+        else:
+            no_improve += 1
+
+        if no_improve >= patience:
+            logging.info(f"Early stopping triggered after epoch {epoch + 1}")
+            break
 
     return best_model
+
+def save_model(model, path):
+    try:
+        directory = os.path.dirname(path)
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+        torch.save(model, path)
+        logging.info(f"Model saved successfully to {path}")
+    except Exception as e:
+        logging.error(f"Error saving model to {path}: {str(e)}")
+        logging.error(f"Current working directory: {os.getcwd()}")
+        logging.error(f"Directory exists: {os.path.exists(directory)}")
+        logging.error(f"Directory is writable: {os.access(directory, os.W_OK)}")
 
 def main():
     logger = setup_logging()
@@ -169,21 +191,12 @@ def main():
     best_peft_model = train_bert_model(peft_model, train_dataloader, test_dataloader, device, class_weights)
 
     # Save the models
-    bert_model_path = '../saved_models/bert_model'
-    peft_model_path = '../saved_models/peft_model'
+    bert_model_path = '../saved_models/bert_model.pth'
+    peft_model_path = '../saved_models/peft_model.pth'
 
     logging.info("Saving models...")
-    try:
-        torch.save(best_bert_model, bert_model_path)
-        logging.info(f"BERT model saved to {bert_model_path}")
-    except Exception as e:
-        logging.error(f"Error saving BERT model: {e}")
-
-    try:
-        torch.save(best_peft_model, peft_model_path)
-        logging.info(f"PEFT model saved to {peft_model_path}")
-    except Exception as e:
-        logging.error(f"Error saving PEFT model: {e}")
+    save_model(best_bert_model, bert_model_path)
+    save_model(best_peft_model, peft_model_path)
 
     logging.info("\nTraining and evaluation complete.")
 
