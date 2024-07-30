@@ -11,7 +11,7 @@ from transformers import BertTokenizer
 
 
 def setup_logging():
-    log_dir = 'logs'
+    log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'logs')
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, f'main_log_{datetime.now().strftime("%Y%m%d_%H%M%S")}.txt')
 
@@ -35,7 +35,7 @@ def main():
 
         # Data preparation
         logger.info("Preparing data")
-        file_path = '../data/heart_2022_no_nans.csv'
+        file_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'heart_2022_no_nans.csv')
         X_train, X_val, X_test, y_train, y_val, y_test = prepare_data(file_path)
 
         # Model preparation

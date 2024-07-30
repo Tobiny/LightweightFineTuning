@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 
 
 def setup_logging():
-    log_dir = '../logs'
+    log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'logs')
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, f'evaluation_log_{datetime.now().strftime("%Y%m%d_%H%M%S")}.txt')
 
@@ -89,7 +89,9 @@ def compare_models(base_metrics, peft_metrics):
         plt.xticks(x, metrics, rotation=45)
         plt.legend()
         plt.tight_layout()
-        plt.savefig('../outputs/model_comparison.png')
+        output_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'outputs')
+        os.makedirs(output_dir, exist_ok=True)
+        plt.savefig(os.path.join(output_dir, 'model_comparison.png'))
         plt.close()
 
         logger.info("Model comparison plot saved")
@@ -111,8 +113,8 @@ def main():
         logger.info(f"Using device: {device}")
 
         # Prepare data
-        file_path = '../data/heart_2022_no_nans.csv'
-        _, X_test, _, y_test = prepare_data(file_path)
+        file_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'heart_2022_no_nans.csv')
+        _, _, X_test, _, _, y_test = prepare_data(file_path)
 
         # Load tokenizer
         tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
@@ -129,13 +131,15 @@ def main():
         test_dataloader = DataLoader(test_dataset, batch_size=16)
 
         # Evaluate base BERT model
-        base_model_path = '../saved_models/final_base_model.pth'
+        base_model_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'saved_models',
+                                       'final_base_model.pth')
         base_model = load_model(base_model_path, device)
         logger.info("Evaluating base BERT model")
         base_metrics = evaluate_model_performance(base_model, test_dataloader, device)
 
         # Evaluate PEFT model
-        peft_model_path = '../saved_models/final_peft_model.pth'
+        peft_model_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'saved_models',
+                                       'final_peft_model.pth')
         peft_model = load_model(peft_model_path, device, is_peft=True)
         logger.info("Evaluating PEFT model")
         peft_metrics = evaluate_model_performance(peft_model, test_dataloader, device)

@@ -99,6 +99,8 @@ def train_model(model, train_dataloader, val_dataloader, device, num_epochs=3):
 
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
+                # Create directory if it doesn't exist
+                os.makedirs('../saved_models', exist_ok=True)
                 torch.save(model.state_dict(), '../saved_models/best_model.pth')
                 logger.info("Best model saved")
 
@@ -157,6 +159,7 @@ def main():
         trained_peft_model, peft_history = train_model(peft_model, train_dataloader, val_dataloader, device)
 
         # Save models
+        os.makedirs('../saved_models', exist_ok=True)
         torch.save(trained_base_model.state_dict(), '../saved_models/final_base_model.pth')
         torch.save(trained_peft_model.state_dict(), '../saved_models/final_peft_model.pth')
         logger.info("Final models saved")
