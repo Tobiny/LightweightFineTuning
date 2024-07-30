@@ -125,16 +125,19 @@ def prepare_data(file_path):
     try:
         df = load_data(file_path)
         X, y = preprocess_data(df)
-        X_train, X_test, y_train, y_test = split_data(X, y)
+        X_train, X_temp, y_train, y_temp = split_data(X, y, test_size=0.3)
+        X_val, X_test, y_val, y_test = split_data(X_temp, y_temp, test_size=0.5)
+
         X_train_resampled, y_train_resampled = handle_class_imbalance(X_train, y_train)
         X_train_text = create_text_representation(X_train_resampled)
+        X_val_text = create_text_representation(X_val)
         X_test_text = create_text_representation(X_test)
+
         logger.info("Data preparation completed successfully")
-        return X_train_text, X_test_text, y_train_resampled, y_test
+        return X_train_text, X_val_text, X_test_text, y_train_resampled, y_val, y_test
     except Exception as e:
         logger.error(f"Error in data preparation pipeline: {str(e)}")
         raise
-
 
 if __name__ == "__main__":
     try:
