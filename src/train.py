@@ -1,15 +1,14 @@
 import os
-import sys
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 from transformers import AdamW, get_linear_schedule_with_warmup
-from data_preparation import load_data, preprocess_data, split_data, create_text_representation
-from model_utils import select_features, evaluate_model, load_bert_model, create_peft_model, get_lora_config, plot_confusion_matrix
+from data_preparation import prepare_data
+from model_utils import load_bert_model, create_peft_model, get_lora_config, evaluate_model, plot_training_history
 from tqdm import tqdm
 import logging
 from datetime import datetime
 import numpy as np
-from sklearn.utils.class_weight import compute_class_weight
+
 
 def setup_logging():
     log_dir = '../logs'
@@ -20,185 +19,153 @@ def setup_logging():
         level=logging.INFO,
         format='%(asctime)s [%(levelname)s] - %(message)s',
         handlers=[
-            logging.FileHandler(log_file, mode='w'),
-            logging.StreamHandler(sys.stdout)
+            logging.FileHandler(log_file),
+            logging.StreamHandler()
         ]
     )
-
-    if os.path.exists(log_file):
-        print(f"Log file created: {log_file}")
-    else:
-        print(f"Failed to create log file: {log_file}")
-
     return logging.getLogger(__name__)
 
-def check_and_create_directory(path):
-    if not os.path.exists(path):
-        os.makedirs(path)
-        logging.info(f"Created directory: {path}")
-    else:
-        logging.info(f"Directory already exists: {path}")
 
-def evaluate_bert(model, dataloader, device):
-    model.eval()
-    all_preds = []
-    all_labels = []
+logger = setup_logging()
 
-    with torch.no_grad():
-        for batch in tqdm(dataloader, desc="Evaluating"):
-            batch = tuple(t.to(device) for t in batch)
-            inputs = {'input_ids': batch[0], 'attention_mask': batch[1]}
-            labels = batch[2]
 
-            outputs = model(**inputs)
-            logits = outputs.logits
-            preds = torch.argmax(logits, dim=1)
-
-            all_preds.extend(preds.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
-
-    metrics, cm = evaluate_model(all_labels, all_preds)
-    plot_confusion_matrix(cm, ['No Heart Attack', 'Heart Attack'])
-    return metrics
-
-def train_bert_model(model, train_dataloader, val_dataloader, device, class_weights, num_epochs=3):
-    optimizer = AdamW(model.parameters(), lr=2e-5)
-    total_steps = len(train_dataloader) * num_epochs
-    scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=0, num_training_steps=total_steps)
-
-    best_f1 = 0
-    best_model = None
-    patience = 2
-    no_improve = 0
-
-    for epoch in range(num_epochs):
-        logging.info(f"Training epoch {epoch + 1}/{num_epochs}...")
-        model.train()
-        total_loss = 0
-        for batch in tqdm(train_dataloader, desc="Training"):
-            batch = tuple(t.to(device) for t in batch)
-            inputs = {'input_ids': batch[0], 'attention_mask': batch[1], 'labels': batch[2]}
-
-            outputs = model(**inputs)
-            logits = outputs.logits
-            loss = torch.nn.functional.cross_entropy(logits, inputs['labels'], weight=class_weights.to(device))
-            total_loss += loss.item()
-
-            loss.backward()
-
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
-            scheduler.step()
-            optimizer.zero_grad()
-
-        avg_loss = total_loss / len(train_dataloader)
-        logging.info(f"Average loss for epoch {epoch + 1}: {avg_loss:.4f}")
-
-        logging.info(f"Evaluating after epoch {epoch + 1}...")
-        metrics = evaluate_bert(model, val_dataloader, device)
-
-        logging.info(f"Epoch {epoch + 1}/{num_epochs} metrics:")
-        for metric, value in metrics.items():
-            logging.info(f"{metric}: {value:.4f}")
-
-        if metrics['f1_score'] > best_f1:
-            best_f1 = metrics['f1_score']
-            best_model = model.state_dict()
-            no_improve = 0
-        else:
-            no_improve += 1
-
-        if no_improve >= patience:
-            logging.info(f"Early stopping triggered after epoch {epoch + 1}")
-            break
-
-    return best_model
-
-def save_model(model, path):
+def train_model(model, train_dataloader, val_dataloader, device, num_epochs=3):
     try:
-        directory = os.path.dirname(path)
-        if not os.path.exists(directory):
-            os.makedirs(directory)
-        torch.save(model, path)
-        logging.info(f"Model saved successfully to {path}")
+        logger.info("Starting model training")
+        optimizer = AdamW(model.parameters(), lr=2e-5)
+        total_steps = len(train_dataloader) * num_epochs
+        scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=0, num_training_steps=total_steps)
+
+        best_val_loss = float('inf')
+        history = {'train_loss': [], 'val_loss': [], 'train_accuracy': [], 'val_accuracy': []}
+
+        for epoch in range(num_epochs):
+            model.train()
+            total_train_loss = 0
+            correct_train_preds = 0
+            total_train_samples = 0
+
+            for batch in tqdm(train_dataloader, desc=f"Epoch {epoch + 1}/{num_epochs}"):
+                batch = tuple(t.to(device) for t in batch)
+                inputs = {'input_ids': batch[0], 'attention_mask': batch[1], 'labels': batch[2]}
+
+                model.zero_grad()
+                outputs = model(**inputs)
+                loss = outputs.loss
+                logits = outputs.logits
+
+                total_train_loss += loss.item()
+                preds = torch.argmax(logits, dim=1)
+                correct_train_preds += (preds == inputs['labels']).sum().item()
+                total_train_samples += inputs['labels'].size(0)
+
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                scheduler.step()
+
+            avg_train_loss = total_train_loss / len(train_dataloader)
+            train_accuracy = correct_train_preds / total_train_samples
+            history['train_loss'].append(avg_train_loss)
+            history['train_accuracy'].append(train_accuracy)
+
+            # Validation
+            model.eval()
+            total_val_loss = 0
+            correct_val_preds = 0
+            total_val_samples = 0
+
+            with torch.no_grad():
+                for batch in tqdm(val_dataloader, desc="Validation"):
+                    batch = tuple(t.to(device) for t in batch)
+                    inputs = {'input_ids': batch[0], 'attention_mask': batch[1], 'labels': batch[2]}
+
+                    outputs = model(**inputs)
+                    loss = outputs.loss
+                    logits = outputs.logits
+
+                    total_val_loss += loss.item()
+                    preds = torch.argmax(logits, dim=1)
+                    correct_val_preds += (preds == inputs['labels']).sum().item()
+                    total_val_samples += inputs['labels'].size(0)
+
+            avg_val_loss = total_val_loss / len(val_dataloader)
+            val_accuracy = correct_val_preds / total_val_samples
+            history['val_loss'].append(avg_val_loss)
+            history['val_accuracy'].append(val_accuracy)
+
+            logger.info(
+                f"Epoch {epoch + 1}/{num_epochs} - Train Loss: {avg_train_loss:.4f}, Train Accuracy: {train_accuracy:.4f}, Val Loss: {avg_val_loss:.4f}, Val Accuracy: {val_accuracy:.4f}")
+
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                torch.save(model.state_dict(), '../saved_models/best_model.pth')
+                logger.info("Best model saved")
+
+        plot_training_history(history)
+        logger.info("Training completed")
+        return model, history
+
     except Exception as e:
-        logging.error(f"Error saving model to {path}: {str(e)}")
-        logging.error(f"Current working directory: {os.getcwd()}")
-        logging.error(f"Directory exists: {os.path.exists(directory)}")
-        logging.error(f"Directory is writable: {os.access(directory, os.W_OK)}")
+        logger.error(f"Error during model training: {str(e)}")
+        raise
+
 
 def main():
-    logger = setup_logging()
-    logger.info("Setup initialized.")
+    try:
+        logger.info("Starting main training process")
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        logger.info(f"Using device: {device}")
 
-    check_and_create_directory('../saved_models')
-    check_and_create_directory('../outputs')
+        # Prepare data
+        file_path = '../data/heart_2022_no_nans.csv'
+        X_train_text, X_val_text, y_train, y_val = prepare_data(file_path)
 
-    logging.info("Loading and preprocessing data...")
-    df = load_data('../data/heart_2022_no_nans.csv')
-    X, y = preprocess_data(df)
-    X_train, X_test, y_train, y_test = split_data(X, y)
+        # Load BERT model and tokenizer
+        tokenizer, base_model = load_bert_model()
 
-    # Compute class weights
-    class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
-    class_weights = torch.tensor(class_weights, dtype=torch.float)
+        # Tokenize data
+        train_encodings = tokenizer(X_train_text, truncation=True, padding=True, max_length=512)
+        val_encodings = tokenizer(X_val_text, truncation=True, padding=True, max_length=512)
 
-    logging.info("Creating text representations...")
-    X_train_text = create_text_representation(X_train)
-    X_test_text = create_text_representation(X_test)
+        # Create datasets
+        train_dataset = TensorDataset(
+            torch.tensor(train_encodings['input_ids']),
+            torch.tensor(train_encodings['attention_mask']),
+            torch.tensor(y_train.values)
+        )
+        val_dataset = TensorDataset(
+            torch.tensor(val_encodings['input_ids']),
+            torch.tensor(val_encodings['attention_mask']),
+            torch.tensor(y_val.values)
+        )
 
-    logging.info("Loading BERT model and tokenizer...")
-    tokenizer, bert_model = load_bert_model()
+        # Create dataloaders
+        train_dataloader = DataLoader(train_dataset, batch_size=16, shuffle=True)
+        val_dataloader = DataLoader(val_dataset, batch_size=16)
 
-    logging.info("Tokenizing data...")
-    train_encodings = tokenizer(X_train_text, truncation=True, padding=True, max_length=512)
-    test_encodings = tokenizer(X_test_text, truncation=True, padding=True, max_length=512)
+        # Train base model
+        base_model.to(device)
+        logger.info("Training base BERT model")
+        trained_base_model, base_history = train_model(base_model, train_dataloader, val_dataloader, device)
 
-    logging.info("Creating datasets...")
-    train_dataset = TensorDataset(
-        torch.tensor(train_encodings['input_ids']),
-        torch.tensor(train_encodings['attention_mask']),
-        torch.tensor(y_train.values)
-    )
-    test_dataset = TensorDataset(
-        torch.tensor(test_encodings['input_ids']),
-        torch.tensor(test_encodings['attention_mask']),
-        torch.tensor(y_test.values)
-    )
+        # Create and train PEFT model
+        peft_config = get_lora_config()
+        peft_model = create_peft_model(base_model, peft_config)
+        peft_model.to(device)
+        logger.info("Training PEFT model")
+        trained_peft_model, peft_history = train_model(peft_model, train_dataloader, val_dataloader, device)
 
-    logging.info("Creating dataloaders...")
-    train_dataloader = DataLoader(train_dataset, batch_size=16, shuffle=True)
-    test_dataloader = DataLoader(test_dataset, batch_size=16)
+        # Save models
+        torch.save(trained_base_model.state_dict(), '../saved_models/final_base_model.pth')
+        torch.save(trained_peft_model.state_dict(), '../saved_models/final_peft_model.pth')
+        logger.info("Final models saved")
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    logging.info(f"Using device: {device}")
-    bert_model.to(device)
+        logger.info("Training process completed successfully")
 
-    logging.info("\nEvaluating base BERT model:")
-    base_metrics = evaluate_bert(bert_model, test_dataloader, device)
-    logging.info("Base BERT model performance:")
-    for metric, value in base_metrics.items():
-        logging.info(f"{metric}: {value:.4f}")
+    except Exception as e:
+        logger.error(f"Error in main training process: {str(e)}")
 
-    logging.info("\nTraining base BERT model:")
-    best_bert_model = train_bert_model(bert_model, train_dataloader, test_dataloader, device, class_weights)
-
-    logging.info("\nCreating and training PEFT model:")
-    peft_config = get_lora_config()
-    peft_model = create_peft_model(bert_model, peft_config)
-    peft_model.to(device)
-
-    best_peft_model = train_bert_model(peft_model, train_dataloader, test_dataloader, device, class_weights)
-
-    # Save the models
-    bert_model_path = '../saved_models/bert_model.pth'
-    peft_model_path = '../saved_models/peft_model.pth'
-
-    logging.info("Saving models...")
-    save_model(best_bert_model, bert_model_path)
-    save_model(best_peft_model, peft_model_path)
-
-    logging.info("\nTraining and evaluation complete.")
 
 if __name__ == "__main__":
     main()
