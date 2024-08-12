@@ -58,7 +58,7 @@ model = AutoModelForSequenceClassification.from_pretrained(model_name, num_label
 # Create a LoRA configuration for Parameter-Efficient Fine-Tuning
 lora_config = LoraConfig(
     r=8,  # Rank of the low-rank matrices
-    lora_alpha=16,  # Scaling factor for the LoRA updates
+    lora_alpha=32,  # Scaling factor for the LoRA updates (changed from 16)
     target_modules=["q_lin", "v_lin", "k_lin", "out_lin"],  # Target specific linear layers in DistilBERT
     lora_dropout=0.1,  # Dropout probability for the LoRA layers
     bias="none",  # No bias term for the LoRA layers
@@ -78,7 +78,7 @@ training_args = TrainingArguments(
     learning_rate=2e-5,  # Learning rate for the optimizer
     per_device_train_batch_size=16,  # Batch size for training
     per_device_eval_batch_size=16,  # Batch size for evaluation
-    num_train_epochs=1,  # Number of training epochs
+    num_train_epochs=3,  # Number of training epochs (changed from 1)
     weight_decay=0.01,  # Weight decay for regularization
     save_steps=10_000,  # Save the model every 10,000 steps
     save_total_limit=2,  # Keep only the last 2 saved checkpoints
